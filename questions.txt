@@ -1,0 +1,15 @@
+
+1.yolov11和yolov8没办法判断use_traditional去开启传统方法矫正
+2.将扩展卡尔曼改成无迹卡尔曼
+3.classify_model有OpenCV DNN 和OpenVINO两种，但是默认不调用OpenVINO，可优化
+4.目标检测用的是YOLO，图像分类用的是resnet，·可以换成其他算法吗
+5.这个项目和兵种有多种功能要实现，他是怎么判断执行那个功能的，程序执行的主入口只要是src目录，不同文件的功能是不一样的，可以并行执行吗
+6.Sentry使用的是双头的方案，有ShootMode变量控制和left_yaw_offset / right_yaw_offset参数影响，可以优化成单头
+7.configs目录下有许多未被用到或者已经优化的参数存在
+8.这个项目的设备中云台和imu是在同一坐标原点的，所以他们没有考虑坐标系转换的平移矩阵，我们需要添加上
+9.这个项目采用了全向感知的模块，即使用USB相机以及USB相机的相关参数还有背部的工业相机，这些相机会被项目作融合处理，没有的话会有报错隐患，需要改成只支持单个主相机
+10.这个项目的云台用到了串口通信，而Cboard用到can通信，dm_imu用到了串口通信，但是我们的兵种的云台和imu不能用串口通信，而且这个项目通过串口接受了多种数据，但是只有四元数q被使用，其他的只被接收保存
+11.这个项目的USB2CAN设备是通过SocketCAN和slcand设置的，但是目前我们只有达妙科技的USN2CAN，需要使用他们的SDK
+12.R_gimbal2imubody参数需要根据实际的imu和云台的坐标系的相对旋转去设定，可能需要添加T_gimbal2imubody去表示imu和云台的相对偏移
+13.目前添加了新的参数：usb2can_device，can_bitrate，需要添加但是未添加参数：标定图片是棋盘还是圆点，T_gimbal2imubody，整理calibration目录下的代码和iocan通信的代码，可以从yaml文件里读取这些参数
+14.std::string CBoard::read_yaml(const std::string & config_path)注释有待改进

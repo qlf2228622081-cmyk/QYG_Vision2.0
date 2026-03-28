@@ -1,0 +1,91 @@
+# enemy_color: "red"
+enemy_color: "blue"
+
+#####-----神经网络参数-----#####
+yolo_name: yolov5
+classify_model: assets/tiny_resnet.onnx
+yolo11_model_path: assets/yolo11.xml
+yolov8_model_path: assets/yolov8.xml
+yolov5_model_path: assets/yolov5.xml
+device: "AUTO:GPU,CPU,NPU"
+min_confidence: 0.8
+use_traditional: true
+
+#####-----ROI-----#####
+roi: 
+  x: 420
+  y: 50
+  width: 600
+  height: 600
+
+use_roi: false
+
+#####-----传统方法参数-----#####
+threshold: 150
+max_angle_error: 45 # degree
+min_lightbar_ratio: 1.5
+max_lightbar_ratio: 20
+min_lightbar_length: 8
+min_armor_ratio: 1
+max_armor_ratio: 5
+max_side_ratio: 1.5
+max_rectangular_error: 25 # degree
+min_confidence: 0.8
+
+#####-----tracker参数-----#####
+min_detect_count: 5
+max_temp_lost_count: 15
+outpost_max_temp_lost_count: 75
+
+#####-----aimer参数-----#####
+yaw_offset: 0 # degree -2.5
+pitch_offset: 2 # degree 2
+comming_angle: 60 # degree
+leaving_angle: 20 # degree
+decision_speed: 8 # rad/s
+high_speed_delay_time: 0.015 # s
+low_speed_delay_time: 0.015 # s
+
+#####-----shooter参数-----#####
+first_tolerance: 3 # 近距离射击容差，degree
+second_tolerance: 2 # 远距离射击容差，degree
+judge_distance: 2 #距离判断阈值
+auto_fire: true # 是否由自瞄控制射击
+
+#####-----camera参数-----#####
+camera_name: "hikrobot_gige"
+exposure_ms: 1
+gain: 1
+
+#  1  0  0
+#  0  1  0
+#  0  0  1
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0,  0, 0, 1]
+
+
+# 重投影误差: 0.2093px
+camera_matrix: [1294.8892653269006, 0, 785.36068839978952, 0, 1295.6276616050427, 620.79010246005976, 0, 0, 1]
+distort_coeffs: [-0.1412003069332769, 0.12830321514022877, -0.0010833689481433402, -0.00091722548143827003, 0]
+
+# 相机同理想情况的偏角
+#  0  0  1
+#  -1  0  0
+#  0  -1  0
+# 相机同理想情况的偏角: yaw-1.23 pitch0.29 roll0.35 degree
+R_camera2gimbal: [-0.0050975364070289242, 0.0061233522659080442, 0.99996825933606837, -0.99975712278191076, -0.021471945971134998, -0.0049649756341745887, 0.021440862142514155, -0.99975069897111857, 0.0062313190694618381]
+t_camera2gimbal: [0.11741499878328482, 0.010442011579886511, 0.081762426406008573]
+
+
+#####-----cboard参数-----#####
+quaternion_canid: 0x100
+bullet_speed_canid: 0x101
+send_canid: 0x10
+can_interface: "can0"
+
+
+#####-----buff_detector参数-----#####
+model: "assets/yolov5.xml"
+
+#####-----buff_aimer参数-----#####
+fire_gap_time: 0.520   # s
+predict_time: 0.100     # s

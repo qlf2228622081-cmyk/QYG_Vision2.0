@@ -1,0 +1,25 @@
+[Unit]
+Description=RM Vision Auto Start Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rm
+Group=rm
+WorkingDirectory=/home/rm/rm_vision_2025
+ExecStart=/bin/bash /home/rm/rm_vision_2025/autostart.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量（如果需要）
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# 在服务启动时记录时间戳（使用简单的日期格式）
+ExecStartPre=/bin/sh -c 'logger -t rm_vision "[systemd] 服务启动时间: $(date +%%Y-%%m-%%d\ %%H:%%M:%%S)"'
+
+[Install]
+WantedBy=multi-user.target
+
