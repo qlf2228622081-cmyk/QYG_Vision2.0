@@ -45,14 +45,14 @@ int main(int argc, char * argv[])
   tools::Exiter exiter;
   tools::Recorder recorder;
 
-  io::CBoard cboard(config_path);
-  io::Camera camera(config_path);
+  io::CBoard cboard(config_path);//和主控板通信
+  io::Camera camera(config_path);//相机读取
 
-  auto_aim::multithread::MultiThreadDetector detector(config_path,true);
-  auto_aim::Solver solver(config_path);
-  auto_aim::Tracker tracker(config_path, solver);
-  auto_aim::Aimer aimer(config_path);
-  auto_aim::Shooter shooter(config_path);
+  auto_aim::multithread::MultiThreadDetector detector(config_path,true);//装甲板检测
+  auto_aim::Solver solver(config_path);//姿态和坐标解算
+  auto_aim::Tracker tracker(config_path, solver);//目标跟踪
+  auto_aim::Aimer aimer(config_path);//瞄准解算
+  auto_aim::Shooter shooter(config_path);//决定是否开火
   io::Command command;
 
   tools::ThreadSafeQueue<AimTask, true> target_queue(1);
@@ -71,7 +71,7 @@ int main(int argc, char * argv[])
   int idle_counter = 0;  // idle模式下的计数器，用于降低发送频率
   constexpr int send_repeat_count = 10;  // 每个命令重复发送次数，提高数据到达率
 
-  // 检测线程：异步进行图像采集和检测
+  // 检测线程：异步进行图像采集和检测（负责找目标）
   auto detect_thread = std::thread([&]() {
     cv::Mat img;
     std::chrono::steady_clock::time_point t;
@@ -85,7 +85,7 @@ int main(int argc, char * argv[])
     }
   });
 
-  // 瞄准线程：使用Aimer进行瞄准
+  // 瞄准线程：使用Aimer进行瞄准（负责打目标）
   auto plan_thread = std::thread([&]() {
     while (!quit && !exiter.exit()) {
       if (mode.load() == io::Mode::auto_aim && !target_queue.empty()) {
@@ -107,7 +107,7 @@ int main(int argc, char * argv[])
       }
     }
   });
-
+  //这是主循环，负责模式切换和发送命令
   while (!exiter.exit()) {
     mode = cboard.mode;
     auto current_mode = mode.load();
@@ -125,7 +125,7 @@ int main(int argc, char * argv[])
       auto q = cboard.imu_at(t);
       recorder.record(img, q, t); 
       solver.set_R_gimbal2world(q);
-      auto targets = tracker.track(armors, t);
+      auto targets = tracker.track(armors, t);//把检测结果变成稳定的跟踪目标
       if (!targets.empty()) {
         target_queue.push({targets.front(), t});
       } else {
