@@ -61,6 +61,17 @@ void MultiThreadDetector::push(cv::Mat img, std::chrono::steady_clock::time_poin
   infer_request.start_async();
   queue_.push({img.clone(), t, std::move(infer_request)});
 }
+"""
+push函数负责将图像数据和时间戳打包成一个任务，并将其放入线程安全队列中。它首先根据输入图像的尺寸计算缩放比例，然后将图像缩放到640x640的输入尺寸。
+接着，它创建一个OpenVINO的推理请求，将预处理后的图像数据设置为输入张量，并异步启动推理。
+最后，它将原始图像、时间戳和推理请求一起推入队列中，以供后续处理线程使用。
+
+
+总结就是：接收一帧图像，完成送入检测模型前的预处理
+启动一次异步推理，然后把“原图副本 + 时间戳 + 这次推理请求”放进内部队列
+供后续 pop()/debug_pop() 取结果。
+"""
+
 
 std::tuple<std::list<Armor>, std::chrono::steady_clock::time_point> MultiThreadDetector::pop()
 {

@@ -21,8 +21,8 @@ public:
 
   void push(const T & value)
   {
+    
     std::unique_lock<std::mutex> lock(mutex_);
-
     if (queue_.size() >= max_size_) {
       if (PopWhenFull) {
         queue_.pop();

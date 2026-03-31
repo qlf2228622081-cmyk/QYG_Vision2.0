@@ -77,13 +77,28 @@ int main(int argc, char * argv[])
     std::chrono::steady_clock::time_point t;
 
     while (!quit && !exiter.exit()) {
+      //仅在自瞄模式下持续读取图片并且向检测器投喂新的帧
       if (mode.load() == io::Mode::auto_aim) {
+        //从相机封装层取出一帧图像及其时间戳
+        //底层相机类会根据yaml配置自动选择具体的相机类型进行初始化和读取
         camera.read(img, t);
+        //对当前帧图像做预处理，进行检测，检测是一次异步推理
+        //同时将原图、时间戳和推理请求压入检测器内部队列
+        //结果会被放入一个线程安全的队列中，供瞄准线程使用
+        """
+        推理是把图像送进神经网络得到原始的输出tensor，之后会进行后处理得到装甲板列表
+        由于推理可能比较耗时，所以采用异步的方式进行，避免阻塞主线程。
+        主线程会持续读取相机帧并投喂给检测器，检测器内部会有一个线程池专门处理这些帧的推理任务，
+        推理完成后会把结果放入一个线程安全的队列中，供瞄准线程使用。
+        """
+        
         detector.push(img, t);  // 异步检测
       } else
         std::this_thread::sleep_for(10ms);
     }
   });
+  //检测线程结束
+
 
   // 瞄准线程：使用Aimer进行瞄准（负责打目标）
   auto plan_thread = std::thread([&]() {
@@ -107,6 +122,9 @@ int main(int argc, char * argv[])
       }
     }
   });
+  //瞄准线程结束
+  
+  
   //这是主循环，负责模式切换和发送命令
   while (!exiter.exit()) {
     mode = cboard.mode;
@@ -120,11 +138,27 @@ int main(int argc, char * argv[])
     /// 自瞄
     if (current_mode == io::Mode::auto_aim) {
       // 从检测队列获取结果（异步检测已完成）
+      //push()是检测线程调用的，负责把相机帧送入检测器进行异步推理；
+      //debug_pop()是瞄准线程调用的，负责从检测器获取最新的检测结果
+      //检测线程已经结束，我们获得了img，armors，t
+      //下一步：检测结果 armors -> 跟踪目标 targets
       auto [img, armors, t] = detector.debug_pop();
 
+      //下面四行合起来的意义是：
+      //把“这一帧图像上的检测结果 armors”放到正确的时间和姿态背景里
+      //最终变成可持续跟踪的目标 targets。
+      
+      //1. 从主控板获取当前时间戳对应的IMU数据，得到当前云台姿态 q
+      //拿时间戳t这一刻的IMU的四元数，还会用前后两帧的IMU做插值
+      //目的是为了让图像和姿态对齐
       auto q = cboard.imu_at(t);
+      //2.把图像姿态时间戳按照设定的频率记录下来，保存成视频和文本（主要用于调试）
       recorder.record(img, q, t); 
+      //3.它用IMU的四元数q去更新R_gimbal2world，这样就把检测结果放在了正确的姿态背景里
+      //把云台坐标系和世界坐标系之间当前怎么旋转告诉solve解算器
       solver.set_R_gimbal2world(q);
+
+      //4.结合当前帧检测结果和历史状态，完成目标解算与跟踪，得到稳定目标
       auto targets = tracker.track(armors, t);//把检测结果变成稳定的跟踪目标
       if (!targets.empty()) {
         target_queue.push({targets.front(), t});
@@ -168,6 +202,8 @@ int main(int argc, char * argv[])
     }
 
   }
+  //主循环结束
+
   quit = true;
   if (detect_thread.joinable()) detect_thread.join();
   if (plan_thread.joinable()) plan_thread.join();
