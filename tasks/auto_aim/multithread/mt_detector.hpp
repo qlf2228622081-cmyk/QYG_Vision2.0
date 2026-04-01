@@ -25,14 +25,13 @@ public:
   std::tuple<std::list<Armor>, std::chrono::steady_clock::time_point> pop();  //暂时不支持yolov8
 
   std::tuple<cv::Mat, std::list<Armor>, std::chrono::steady_clock::time_point> debug_pop();
-  //这里的结构化绑定
-  //三个变量类型分别是：
-"""
-img -> cv::Mat
-armors -> std::list<Armor>
-t -> std::chrono::steady_clock::time_point
-
-"""
+  /*
+  这里的结构化绑定
+  三个变量类型分别是：
+  img -> cv::Mat
+  armors -> std::list<Armor>
+  t -> std::chrono::steady_clock::time_point
+  */
 
 private:
   ov::Core core_;
@@ -45,10 +44,10 @@ private:
     queue_{16, [] { tools::logger()->debug("[MultiThreadDetector] queue is full!"); }};
 };
 
-"""
+/*
 queue_ 为什么你觉得“没定义”
 因为它不是 QYG_hero.cpp 里的局部变量，而是 MultiThreadDetector 类的私有成员变量，定义在类里面：
-"""
+*/
 
 }  // namespace multithread
 

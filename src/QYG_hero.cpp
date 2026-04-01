@@ -32,12 +32,12 @@ struct AimTask
   std::optional<auto_aim::Target> target;
   std::chrono::steady_clock::time_point timestamp;
 };
-"""
+
+/*
 所以 target_queue 里每一项都不是图片、也不是 armors，而是：
 一个可选目标 target
 一个对应时间戳 timestamp
-"""
-
+*/
 
 int main(int argc, char * argv[])
 {
@@ -48,14 +48,14 @@ int main(int argc, char * argv[])
     return 0;
   }
 
-  """
+  /*
   创建类的实例对象，也就是定义对象变量，并调用构造函数进行初始化
   如：io::Cboard cboard(config_path);
   意思就是：
   类型是 io::CBoard
   变量名是 cboard
   用参数 config_path 调它的构造函数，创建一个对象
-  """
+  */
 
   tools::Exiter exiter;
   tools::Recorder recorder;
@@ -63,17 +63,18 @@ int main(int argc, char * argv[])
   io::CBoard cboard(config_path);//和主控板通信对象
   io::Camera camera(config_path);//相机对象
 
-  auto_aim::multithread::MultiThreadDetector detector(config_path,true);//装甲板检测
-"""
-这表示创建了一个 detector 对象。
-而 detector 这个对象内部就自带一个成员：
-detector.queue_
+  auto_aim::multithread::MultiThreadDetector detector(config_path, true);//装甲板检测
 
-只是因为 queue_ 是 private，你不能在 QYG_hero.cpp 里直接写 detector.queue_ 去访问它。
-所以你要这样理解：
-target_queue：主程序自己显式创建的队列
-queue_：detector 模块自己内部维护的队列
-"""
+  /*
+  这表示创建了一个 detector 对象。
+  而 detector 这个对象内部就自带一个成员：
+  detector.queue_
+
+  只是因为 queue_ 是 private，你不能在 QYG_hero.cpp 里直接写 detector.queue_ 去访问它。
+  所以你要这样理解：
+  target_queue：主程序自己显式创建的队列
+  queue_：detector 模块自己内部维护的队列
+  */
 
   auto_aim::Solver solver(config_path);//姿态和坐标解算
   auto_aim::Tracker tracker(config_path, solver);//目标跟踪
@@ -81,48 +82,43 @@ queue_：detector 模块自己内部维护的队列
   auto_aim::Shooter shooter(config_path);//决定是否开火
   io::Command command;
 
-"""
-你这段里每一行几乎都可以这么读：
-tools::Exiter exiter;
-创建一个 Exiter 对象 exiter
-tools::Recorder recorder;
-创建一个 Recorder 对象 recorder
-io::CBoard cboard(config_path);
-创建一个和主控板通信的对象
-io::Camera camera(config_path);
-创建一个相机对象
-auto_aim::multithread::MultiThreadDetector detector(config_path, true);
-创建一个多线程检测器对象
-auto_aim::Solver solver(config_path);
-创建一个解算器对象
-auto_aim::Tracker tracker(config_path, solver);
-创建一个跟踪器对象
-auto_aim::Aimer aimer(config_path);
-创建一个瞄准器对象
-auto_aim::Shooter shooter(config_path);
-创建一个开火判定对象
-io::Command command;
-创建一个命令对象
-你可以把它们理解成：程序一开始先把这一套“工具人”都实例化出来，后面主循环里反复调用它们的方法。
-"""
+  /*
+  你这段里每一行几乎都可以这么读：
+  tools::Exiter exiter;
+  创建一个 Exiter 对象 exiter
+  tools::Recorder recorder;
+  创建一个 Recorder 对象 recorder
+  io::CBoard cboard(config_path);
+  创建一个和主控板通信的对象
+  io::Camera camera(config_path);
+  创建一个相机对象
+  auto_aim::multithread::MultiThreadDetector detector(config_path, true);
+  创建一个多线程检测器对象
+  auto_aim::Solver solver(config_path);
+  创建一个解算器对象
+  auto_aim::Tracker tracker(config_path, solver);
+  创建一个跟踪器对象
+  auto_aim::Aimer aimer(config_path);
+  创建一个瞄准器对象
+  auto_aim::Shooter shooter(config_path);
+  创建一个开火判定对象
+  io::Command command;
+  创建一个命令对象
+  你可以把它们理解成：程序一开始先把这一套“工具人”都实例化出来，后面主循环里反复调用它们的方法。
+  */
 
-"""
-tools::ThreadSafeQueue<AimTask, true> target_queue(1);
-这句非常关键，能读出 3 件事：
+  /*
+  tools::ThreadSafeQueue<AimTask, true> target_queue(1);
+  这句非常关键，能读出 3 件事：
 
-元素类型是 AimTask
-true 表示“队列满了就弹掉旧数据再塞新数据”
-(1) 表示队列容量只有 1
-所以它不是普通“排长队”的队列，而是一个 只保留最新任务的单槽邮箱。
+  元素类型是 AimTask
+  true 表示“队列满了就弹掉旧数据再塞新数据”
+  (1) 表示队列容量只有 1
+  所以它不是普通“排长队”的队列，而是一个 只保留最新任务的单槽邮箱。
 
-它具体怎么工作
-生产者是主线程：
-
-
-"""
-
-
-
+  它具体怎么工作
+  生产者是主线程：
+  */
   tools::ThreadSafeQueue<AimTask, true> target_queue(1);
   target_queue.push({std::nullopt, std::chrono::steady_clock::now()});
 
@@ -153,13 +149,12 @@ true 表示“队列满了就弹掉旧数据再塞新数据”
         //对当前帧图像做预处理，进行检测，检测是一次异步推理
         //同时将原图、时间戳和推理请求压入检测器内部队列
         //结果会被放入一个线程安全的队列中，供瞄准线程使用
-        """
+        /*
         推理是把图像送进神经网络得到原始的输出tensor，之后会进行后处理得到装甲板列表
         由于推理可能比较耗时，所以采用异步的方式进行，避免阻塞主线程。
         主线程会持续读取相机帧并投喂给检测器，检测器内部会有一个线程池专门处理这些帧的推理任务，
         推理完成后会把结果放入一个线程安全的队列中，供瞄准线程使用。
-        """
-        
+        */
         detector.push(img, t);  // 异步检测
       } else
         std::this_thread::sleep_for(10ms);

@@ -12,8 +12,7 @@
 #include "tasks/omniperception/perceptron.hpp"
 #include "tools/thread_safe_queue.hpp"
 
-"""
-
+/*
 把一帧里的 armors（检测结果）变成一个持续、稳定、可预测的 target（跟踪目标）
 Tracker 负责把 armors 转换成 targets，核心是一个状态机，状态包括 lost、detecting、tracking、temp_lost、switching
 lost -> detecting -> tracking -> temp_lost -> lost
@@ -22,8 +21,7 @@ lost -> switching -> lost
 其中 switching 是 lost 和 tracking 之间的过渡状态，主要用于切换目标时的过渡，防止目标丢失过快；temp_lost 是 tracking 和 lost 之间的过渡状态，主要用于目标暂时丢失时的处理。
 
 所以它不是检测器，也不是瞄准器，而是中间那层“目标管理器”。
-
-"""
+*/
 
 
 namespace auto_aim
@@ -37,12 +35,12 @@ public:
 
   std::string state() const;
 
-  //返回一个Target链表
-  //参数1：参数 1：std::list<Armor> & armors,也就是“传进来一个 Armor 链表，并且是引用”
-  //参数2：time_point t也就是“传进来一个时间戳”
-  //参数3：bool use_enemy_color = true 也就是“传进来一个布尔值，默认值是true”
-
-  
+  /*
+  返回一个Target链表
+  参数1：参数 1：std::list<Armor> & armors,也就是“传进来一个 Armor 链表，并且是引用”
+  参数2：time_point t也就是“传进来一个时间戳”
+  参数3：bool use_enemy_color = true 也就是“传进来一个布尔值，默认值是true”
+  */
   std::list<Target> track(
     std::list<Armor> & armors, std::chrono::steady_clock::time_point t,
     bool use_enemy_color = true);
