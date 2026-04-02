@@ -49,6 +49,8 @@ void CommandGener::generate_command()
     if (input) {
       auto command = aimer_.aim(input->targets_, input->t, input->bullet_speed);
       command.shoot = shooter_.shoot(command, aimer_, input->targets_, input->gimbal_pos);
+      yaw.store(command.yaw);
+      pitch.store(command.pitch);
       command.horizon_distance = input->targets_.empty()
                                    ? 0
                                    : std::sqrt(
