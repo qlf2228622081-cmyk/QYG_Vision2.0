@@ -76,7 +76,7 @@ int main(int argc, char * argv[])
     solver.set_R_gimbal2world(q);
 
     Eigen::Vector3d ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
-
+    tracker.set_enemy_color(cboard.enemy_color_string());
     auto targets = tracker.track(armors, t);
 
     commandgener.push(targets, t, cboard.bullet_speed, ypr);  // 发送给决策线程
