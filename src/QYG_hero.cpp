@@ -85,12 +85,7 @@ int main(int argc, char * argv[])
     auto fps = 1.0 / tools::delta_time(std::chrono::steady_clock::now(), t0);
     tools::draw_text(img, fmt::format("[{}], FPS: {:.2f}, Mode: {}", tracker.state(), fps, io::MODES[mode]), {10, 30}, {255, 255, 255});
     tools::draw_text(img,fmt::format("Gimbal:Yaw: {:.2f}, Pitch: {:.2f}, Bullet Speed: {:.2f}", ypr[0]*57.3, ypr[1]*57.3, cboard.bullet_speed), {10, 60}, {255, 255, 255});
-    tools::draw_text(
-      img,
-      fmt::format(
-        "Command: Yaw: {:.2f}, Pitch: {:.2f}", commandgener.yaw.load() * 57.3,
-        commandgener.pitch.load() * 57.3),
-      {10, 90}, {255, 255, 255});
+    tools::draw_text(img,fmt::format("Command: Yaw: {:.2f}, Pitch: {:.2f}", commandgener.yaw*57.3, commandgener.pitch*57.3), {10, 90}, {255, 255, 255});
 
     if (!targets.empty()) {
       auto target = targets.front();

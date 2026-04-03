@@ -144,7 +144,7 @@ void CBoard::callback(const can_frame &frame) {
 
   auto timestamp = std::chrono::steady_clock::now();
 
-  // 0x100
+  // 0x100 -说明此时击打红色的敌人
   if (frame.can_id == quaternion_canid_) {
     enemy_color_.store(EnemyColor::red, std::memory_order_relaxed);
     auto w = ((uint16_t)(frame.data[0] << 8 | frame.data[1]));
@@ -165,7 +165,9 @@ void CBoard::callback(const can_frame &frame) {
 
     queue_.push({{w_d, x_d, y_d, z_d}, timestamp});
 
-  } else if (frame.can_id == bullet_speed_canid_) {
+  } 
+  // 0x101 -说明此时击打蓝色的敌人
+  else if (frame.can_id == bullet_speed_canid_) {
     enemy_color_.store(EnemyColor::blue, std::memory_order_relaxed);
     auto w = ((uint16_t)(frame.data[0] << 8 | frame.data[1]));
     auto x = ((uint16_t)(frame.data[2] << 8 | frame.data[3]));

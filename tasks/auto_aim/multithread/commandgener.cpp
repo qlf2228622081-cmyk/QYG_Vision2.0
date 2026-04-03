@@ -34,6 +34,11 @@ void CommandGener::push(
   cv_.notify_one();
 }
 
+io::Command CommandGener::latest_command() const
+{
+  return latest_command_;
+}
+
 void CommandGener::generate_command()
 {
   auto t0 = std::chrono::steady_clock::now();
@@ -56,6 +61,7 @@ void CommandGener::generate_command()
                                    : std::sqrt(
                                        tools::square(input->targets_.front().ekf_x()[0]) +
                                        tools::square(input->targets_.front().ekf_x()[2]));
+      latest_command_ = command;
       cboard_.send(command);
       if (debug_) {
         nlohmann::json data;

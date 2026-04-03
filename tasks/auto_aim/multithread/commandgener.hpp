@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "io/cboard.hpp"
+#include "io/command.hpp"
 #include "tasks/auto_aim/shooter.hpp"
 #include "tasks/auto_aim/tracker.hpp"
 #include "tasks/omniperception/decider.hpp"
@@ -31,6 +32,8 @@ public:
     const std::list<auto_aim::Target> & targets, const std::chrono::steady_clock::time_point & t,
     double bullet_speed, const Eigen::Vector3d & gimbal_pos);
 
+  io::Command latest_command() const;
+
 private:
   struct Input
   {
@@ -47,6 +50,7 @@ private:
   tools::Plotter & plotter_;
 
   std::optional<Input> latest_;
+  io::Command latest_command_;
   std::mutex mtx_;
   std::condition_variable cv_;
   std::thread thread_;

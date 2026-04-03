@@ -108,8 +108,11 @@ IMU型号：使用C板内置BMI088作为IMU\
         ```
         chmod +x autostart.sh
         ```
-    停止并禁用自启：
+    查看是否有自启：
+    sudo systemctl status rm_vision.service
+    停止自启：
     sudo systemctl stop rm_vision.service
+    禁用自启：
     sudo systemctl disable rm_vision.service
     启动自启：
     sudo systemctl enable rm_vision.service
