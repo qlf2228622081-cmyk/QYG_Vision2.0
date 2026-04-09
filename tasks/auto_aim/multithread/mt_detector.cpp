@@ -94,7 +94,7 @@ std::tuple<cv::Mat, std::list<Armor>, std::chrono::steady_clock::time_point>
 MultiThreadDetector::debug_pop()
 {
   auto [img, t, infer_request] = queue_.pop();
-  infer_request.wait();
+  infer_request.wait(); //这个地方卡了多久？计算出来！！！
 
   // postprocess
   auto output_tensor = infer_request.get_output_tensor();
@@ -104,7 +104,7 @@ MultiThreadDetector::debug_pop()
   auto y_scale = static_cast<double>(640) / img.cols;
   auto scale = std::min(x_scale, y_scale);
   auto armors = yolo_.postprocess(scale, output, img, 0);  //暂不支持ROI
-
+  //postprocess的后处理是如何计算出来的？会不会有问题？
   return {img, std::move(armors), t};
 }
 
