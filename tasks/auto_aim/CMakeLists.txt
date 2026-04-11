@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(OpenVINO_DIR "/opt/intel/openvino_2024.6.0/runtime/cmake")
+set(OpenVINO_DIR "/home/ethanhaha/QYG_Vision2.0/l_openvino_toolkit_ubuntu22_2024.6.0.17404.4c0f47d2335_x86_64/runtime/cmake")
+find_package(OpenVINO REQUIRED)
 
 find_package(OpenVINO REQUIRED COMPONENTS Runtime)
 
