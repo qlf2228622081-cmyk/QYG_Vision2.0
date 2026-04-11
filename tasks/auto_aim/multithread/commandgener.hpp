@@ -1,6 +1,7 @@
 #ifndef AUTO_AIM_MULTITHREAD__HPP
 #define AUTO_AIM_MULTITHREAD__HPP
 
+#include <atomic>
 #include <optional>
 
 #include "io/cboard.hpp"
@@ -17,6 +18,9 @@ namespace multithread
 class CommandGener
 {
 public:
+  std::atomic<double> yaw{0.0};
+  std::atomic<double> pitch{0.0};
+
   CommandGener(
     auto_aim::Shooter & shooter, auto_aim::Aimer & aimer, io::CBoard & cboard,
     tools::Plotter & plotter, bool debug = false);

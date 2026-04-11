@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.16.3)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
 
 project(rm_vision)
 
@@ -6,15 +7,22 @@ project(rm_vision)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
 message(STATUS "--------------------CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}--------------------")
-
+set(spdlog_DIR "/usr/lib/x86_64-linux-gnu/cmake/spdlog")
+# 其他依赖的系统默认路径，提前指定避免后续报错
+set(OpenVINO_DIR "/home/ethanhaha/QYG_Vision2.0/l_openvino_toolkit_ubuntu22_2024.6.0.17404.4c0f47d2335_x86_64/runtime/cmake" CACHE PATH "OpenVINO path")
+find_package(OpenVINO REQUIRED)
+set(Eigen3_DIR "/usr/share/eigen3/cmake/Eigen3Config.cmake")
+set(fmt_DIR "/usr/lib/x86_64-linux-gnu/cmake/fmt")
+set(yaml-cpp_DIR "/usr/lib/x86_64-linux-gnu/cmake/yaml-cpp")
+set(nlohmann_json_DIR "/usr/share/cmake/nlohmann_json/nlohmann_jsonConfig.cmake")
 find_package(OpenCV REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
-set(OpenVINO_DIR "/opt/intel/openvino_2024.6.0/runtime/cmake/")
-find_package(OpenVINO REQUIRED)
+# set(OpenVINO_DIR "/usr/lib/x86_64-linux-gnu/cmake/opencv4/OpenCVConfig.cmake")
+# find_package(OpenVINO REQUIRED)
 
 
 include_directories(${EIGEN3_INCLUDE_DIR})
