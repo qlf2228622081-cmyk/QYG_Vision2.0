@@ -1,20 +1,17 @@
+#include <fmt/core.h>
+
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
-#include <thread>
 
 #include "io/camera.hpp"
-#include "io/dm_imu/dm_imu.hpp"
+#include "io/cboard.hpp"
 #include "tasks/auto_aim/aimer.hpp"
-#include "tasks/auto_aim/detector.hpp"
+#include "tasks/auto_aim/multithread/commandgener.hpp"
 #include "tasks/auto_aim/shooter.hpp"
 #include "tasks/auto_aim/solver.hpp"
 #include "tasks/auto_aim/tracker.hpp"
 #include "tasks/auto_aim/yolo.hpp"
-#include "tasks/auto_buff/buff_aimer.hpp"
-#include "tasks/auto_buff/buff_detector.hpp"
-#include "tasks/auto_buff/buff_solver.hpp"
-#include "tasks/auto_buff/buff_target.hpp"
-#include "tasks/auto_buff/buff_type.hpp"
 #include "tools/exiter.hpp"
 #include "tools/img_tools.hpp"
 #include "tools/logger.hpp"
@@ -22,40 +19,40 @@
 #include "tools/plotter.hpp"
 #include "tools/recorder.hpp"
 
-const std::string keys =
-  "{help h usage ? |                  | 输出命令行参数说明}"
-  "{@config-path   | configs/uav.yaml | yaml配置文件路径 }";
+using namespace std::chrono;
 
-using namespace std::chrono_literals;
+/**
+ * @brief 无人机 (UAV) 专用视觉程序
+ * 无人机视觉的特点是视角通常从高空俯视，且由于机身晃动剧烈，对 IMU 姿态补偿和目标预测的稳定性要求更高。
+ */
+const std::string keys =
+  "{help h usage ? |      | 输出命令行参数说明}"
+  "{@config-path   | configs/uav.yaml | 位置参数，yaml配置文件路径 }";
 
 int main(int argc, char * argv[])
 {
+  // 1. 初始化命令行解析
   cv::CommandLineParser cli(argc, argv, keys);
-  auto config_path = cli.get<std::string>("@config-path");
-  if (cli.has("help") || !cli.has("@config-path")) {
+  auto config_path = cli.get<std::string>(0);
+  if (cli.has("help") || config_path.empty()) {
     cli.printMessage();
     return 0;
   }
 
+  // 2. 调试组件与硬件初始化
   tools::Exiter exiter;
   tools::Plotter plotter;
   tools::Recorder recorder;
 
-  io::Camera camera(config_path);
-  io::CBoard cboard(config_path);
+  io::CBoard cboard(config_path); // 无人机数传接口
+  io::Camera camera(config_path); // 无人机下挂相机
 
-  auto_aim::Detector detector(config_path);
+  // 3. 算法模块初始化
+  auto_aim::YOLO detector(config_path, false);
   auto_aim::Solver solver(config_path);
-  // auto_aim::YOLO yolo(config_path);
   auto_aim::Tracker tracker(config_path, solver);
   auto_aim::Aimer aimer(config_path);
   auto_aim::Shooter shooter(config_path);
-
-  auto_buff::Buff_Detector buff_detector(config_path);
-  auto_buff::Solver buff_solver(config_path);
-  auto_buff::SmallTarget buff_small_target;
-  auto_buff::BigTarget buff_big_target;
-  auto_buff::Aimer buff_aimer(config_path);
 
   cv::Mat img;
   Eigen::Quaterniond q;
@@ -64,56 +61,38 @@ int main(int argc, char * argv[])
   auto mode = io::Mode::idle;
   auto last_mode = io::Mode::idle;
 
+  /**
+   * @brief 无人机视觉主闭环
+   */
   while (!exiter.exit()) {
-    camera.read(img, t);
+    // a. 图像采集
+    if (!camera.read(img, t)) {
+      continue;
+    }
+    
+    // b. 姿态同步 (Drone IMU Data)
     q = cboard.imu_at(t - 1ms);
     mode = cboard.mode;
-    // recorder.record(img, q, t);
+
     if (last_mode != mode) {
-      tools::logger()->info("Switch to {}", io::MODES[mode]);
+      tools::logger()->info("无人机视觉切换为: {}", io::MODES[mode]);
       last_mode = mode;
     }
 
-    /// 自瞄
-    if (mode == io::Mode::auto_aim || mode == io::Mode::outpost) {
-      solver.set_R_gimbal2world(q);
+    // c. 更新世界坐标映射
+    solver.set_R_gimbal2world(q);
 
-      Eigen::Vector3d ypr = tools::eulers(solver.R_gimbal2world(), 2, 1, 0);
+    // d. 识别环节
+    auto armors = detector.detect(img);
 
-      auto armors = detector.detect(img);
+    // e. 跟踪与滤波 (EKF 处理空中剧烈抖动)
+    auto targets = tracker.track(armors, t);
 
-      auto targets = tracker.track(armors, t);
+    // f. 弹道与提前量解算
+    auto command = aimer.aim(targets, t, cboard.bullet_speed);
 
-      auto command = aimer.aim(targets, t, cboard.bullet_speed);
-
-      command.shoot = shooter.shoot(command, aimer, targets, ypr);
-
-      cboard.send(command);
-    }
-
-    /// 打符
-    else if (mode == io::Mode::small_buff || mode == io::Mode::big_buff) {
-      buff_solver.set_R_gimbal2world(q);
-
-      auto power_runes = buff_detector.detect(img);
-
-      buff_solver.solve(power_runes);
-
-      io::Command buff_command;
-      if (mode == io::Mode::small_buff) {
-        buff_small_target.get_target(power_runes, t);
-        auto target_copy = buff_small_target;
-        buff_command = buff_aimer.aim(target_copy, t, cboard.bullet_speed, true);
-      } else if (mode == io::Mode::big_buff) {
-        buff_big_target.get_target(power_runes, t);
-        auto target_copy = buff_big_target;
-        buff_command = buff_aimer.aim(target_copy, t, cboard.bullet_speed, true);
-      }
-      cboard.send(buff_command);
-    }
-
-    else
-      continue;
+    // g. 发送控制指令 (至无人机飞控或云台)
+    cboard.send(command);
   }
 
   return 0;

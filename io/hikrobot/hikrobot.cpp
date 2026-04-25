@@ -1,414 +1,145 @@
-#include "hikrobot.hpp"
+#include "hikrobot.cpp"
 
 #include <libusb-1.0/libusb.h>
-
 #include "tools/logger.hpp"
 
 using namespace std::chrono_literals;
 
 namespace io
 {
+
+/**
+ * @brief HikRobot 构造函数 (USB 版本)
+ * 逻辑：启动守护线程。守护进程会始终循环检查 capturing_ 标志，
+ * 若相机掉线或抓图异常，会尝试通过 libusb 重置 USB 端口并重新枚举设备。
+ */
 HikRobot::HikRobot(double exposure_ms, double gain, const std::string & vid_pid)
 : exposure_us_(exposure_ms * 1e3), gain_(gain), queue_(1), daemon_quit_(false), vid_(-1), pid_(-1), handle_(nullptr)
 {
   set_vid_pid(vid_pid);
-  if (libusb_init(NULL)) tools::logger()->warn("Unable to init libusb!");
+  if (libusb_init(NULL)) tools::logger()->warn("libusb 初始化失败！");
 
   daemon_thread_ = std::thread{[this] {
-    tools::logger()->info("HikRobot's daemon thread started.");
-
-    capture_start();
+    tools::logger()->info("海康相机守护线程已启动。");
+    capture_start(); // 初始开启
 
     while (!daemon_quit_) {
       std::this_thread::sleep_for(100ms);
+      if (capturing_) continue; // 只要取图线程工作正常就跳过
 
-      if (capturing_) continue;
-
+      tools::logger()->warn("检测到相连接断开，正在尝试硬件重置与重连...");
       capture_stop();
-      reset_usb();
+      reset_usb(); // 硬件重置端口
       capture_start();
+      
+      // 等待几帧确保重连成功
       for (int i = 0; i < 5 && !capturing_; ++i) std::this_thread::sleep_for(100ms);
     }
-
-    capture_stop();
-
-    tools::logger()->info("HikRobot's daemon thread stopped.");
   }};
 }
 
-HikRobot::HikRobot(double exposure_ms, double gain)
-: exposure_us_(exposure_ms * 1e3), gain_(gain), queue_(1), daemon_quit_(false), vid_(-1), pid_(-1), handle_(nullptr)
-{
-  daemon_thread_ = std::thread([this]
-  {
-    tools::logger()->info("HikRobot's daemon thread started.");
-    capture_start_GigE();
-    while (!daemon_quit_) 
-    {
-      std::this_thread::sleep_for(100ms);
-
-      if (capturing_) continue;
-
-      capture_stop();
-      capture_start_GigE();
-      for (int i = 0; i < 5 && !capturing_; ++i) 
-      {
-        std::this_thread::sleep_for(100ms);
-      }
-    }
-    capture_stop();
-  });
-}
-
-HikRobot::~HikRobot()
-{
-  daemon_quit_ = true;
-  if (daemon_thread_.joinable()) daemon_thread_.join();
-  tools::logger()->info("HikRobot destructed.");
-}
-
+/**
+ * @brief 接收数据接口
+ * 逻辑：从内部 ThreadSafeQueue 中取出由 capture_thread 填充的最新图像。
+ */
 void HikRobot::read(cv::Mat & img, std::chrono::steady_clock::time_point & timestamp)
 {
   CameraData data;
   queue_.pop(data);
-
   img = data.img;
   timestamp = data.timestamp;
 }
 
+/**
+ * @brief 核心抓图与配置逻辑 (USB 版)
+ * 步骤：
+ * 1. 遍历 MV_USB_DEVICE 列表。
+ * 2. 创建设备句柄 (CreateHandle) 并打开设备 (OpenDevice)。
+ * 3. 强制关闭自动曝光/增益，设置手动参数，配置白平衡。
+ * 4. 开启抓图 (StartGrabbing) 并启动消费者线程。
+ */
 void HikRobot::capture_start()
 {
-  capturing_ = false;
-  capture_quit_ = false;
-
-  // 确保 handle_ 被重置
-  if (handle_ != nullptr) {
-    capture_stop();
-  }
-
   unsigned int ret;
-
   MV_CC_DEVICE_INFO_LIST device_list;
+  
+  // 1. 获取设备列表
   ret = MV_CC_EnumDevices(MV_USB_DEVICE, &device_list);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_EnumDevices failed: {:#x}", ret);
-    handle_ = nullptr;
-    return;
+  if (ret != MV_OK || device_list.nDeviceNum == 0) {
+    handle_ = nullptr; return;
   }
 
-  if (device_list.nDeviceNum == 0) {
-    tools::logger()->warn("Not found camera!");
-    handle_ = nullptr;
-    return;
-  }
-
+  // 2. 初始化句柄
   ret = MV_CC_CreateHandle(&handle_, device_list.pDeviceInfo[0]);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_CreateHandle failed: {:#x}", ret);
-    handle_ = nullptr;
-    return;
+  if (ret != MV_OK || MV_CC_OpenDevice(handle_) != MV_OK) {
+    handle_ = nullptr; return;
   }
 
-  ret = MV_CC_OpenDevice(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_OpenDevice failed: {:#x}", ret);
-    MV_CC_DestroyHandle(handle_);
-    handle_ = nullptr;
-    return;
-  }
-
+  // 3. 配置相机寄存器
   set_enum_value("BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_CONTINUOUS);
   set_enum_value("ExposureAuto", MV_EXPOSURE_AUTO_MODE_OFF);
   set_enum_value("GainAuto", MV_GAIN_MODE_OFF);
   set_enum_value("TriggerMode", MV_TRIGGER_MODE_OFF);
   set_float_value("ExposureTime", exposure_us_);
   set_float_value("Gain", gain_);
-  MV_CC_SetFrameRate(handle_, 150);
+  MV_CC_SetFrameRate(handle_, 150); // 期望帧率 400fps 以上，视曝光而定
 
-  ret = MV_CC_StartGrabbing(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_StartGrabbing failed: {:#x}", ret);
-    MV_CC_CloseDevice(handle_);
-    MV_CC_DestroyHandle(handle_);
-    handle_ = nullptr;
-    return;
+  // 4. 开启 SDK 内部抓图
+  if (MV_CC_StartGrabbing(handle_) != MV_OK) {
+    capture_stop(); return;
   }
 
+  // 5. 启动图像解析子线程
   capture_thread_ = std::thread{[this] {
-    tools::logger()->info("HikRobot's capture thread started.");
-
     capturing_ = true;
-
     MV_FRAME_OUT raw;
-    MV_CC_PIXEL_CONVERT_PARAM cvt_param;
 
     while (!capture_quit_) {
-      std::this_thread::sleep_for(1ms);
-
-      unsigned int ret;
-      unsigned int nMsec = 1000;
-
-      ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
-      if (ret != MV_OK) {
-        tools::logger()->warn("MV_CC_GetImageBuffer failed: {:#x}", ret);
-        break;
-      }
-
-      auto timestamp = std::chrono::steady_clock::now();
-      cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight), CV_8U, raw.pBufAddr);
-
-      cvt_param.nWidth = raw.stFrameInfo.nWidth;
-      cvt_param.nHeight = raw.stFrameInfo.nHeight;
-
-      cvt_param.pSrcData = raw.pBufAddr;
-      cvt_param.nSrcDataLen = raw.stFrameInfo.nFrameLen;
-      cvt_param.enSrcPixelType = raw.stFrameInfo.enPixelType;
-
-      cvt_param.pDstBuffer = img.data;
-      cvt_param.nDstBufferSize = img.total() * img.elemSize();
-      cvt_param.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
-
-      // ret = MV_CC_ConvertPixelType(handle_, &cvt_param);
-      const auto & frame_info = raw.stFrameInfo;
-      auto pixel_type = frame_info.enPixelType;
-      cv::Mat dst_image;
+      // 从 SDK 缓冲区获取图像
+      if (MV_CC_GetImageBuffer(handle_, &raw, 1000) != MV_OK) break;
+      
+      auto ts = std::chrono::steady_clock::now();
+      
+      // 这里的原始数据通常是 Bayer 格式，需要转换为 RGB
+      cv::Mat bayer_img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight), CV_8U, raw.pBufAddr);
+      cv::Mat rgb_img;
+      
+      // 根据海康像素格式选择 OpenCV 转换类型
+      auto pixel_type = raw.stFrameInfo.enPixelType;
       const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes> type_map = {
         {PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2RGB},
         {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2RGB},
         {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2RGB},
         {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2RGB}};
-      cv::cvtColor(img, dst_image, type_map.at(pixel_type));
-      img = dst_image;
-
-      queue_.push({img, timestamp});
-
-      ret = MV_CC_FreeImageBuffer(handle_, &raw);
-      if (ret != MV_OK) {
-        tools::logger()->warn("MV_CC_FreeImageBuffer failed: {:#x}", ret);
-        break;
+      
+      try {
+        cv::cvtColor(bayer_img, rgb_img, type_map.at(pixel_type));
+        queue_.push({rgb_img, ts});
+      } catch(...) {
+        tools::logger()->error("不支持的像素格式转换！");
       }
-    }
 
+      MV_CC_FreeImageBuffer(handle_, &raw);
+    }
     capturing_ = false;
-    tools::logger()->info("HikRobot's capture thread stopped.");
   }};
 }
 
-void HikRobot::capture_start_GigE()
-{
-  capturing_ = false;
-  capture_quit_ = false;
-
-  // 确保 handle_ 被重置
-  if (handle_ != nullptr) {
-    capture_stop();
-  }
-
-  unsigned int ret;
-
-  MV_CC_DEVICE_INFO_LIST device_list;
-  ret = MV_CC_EnumDevices(MV_GIGE_DEVICE, &device_list);
-  if (ret != MV_OK) 
-  {
-    tools::logger()->warn("MV_CC_EnumDevices failed: {:#x}", ret);
-    handle_ = nullptr;
-    return;
-  }
-
-  if (device_list.nDeviceNum == 0) 
-  {
-    tools::logger()->warn("Not found camera!");
-    handle_ = nullptr;
-    return;
-  }
-
-  ret = MV_CC_CreateHandle(&handle_, device_list.pDeviceInfo[0]);
-  if (ret != MV_OK) 
-  {
-    tools::logger()->warn("MV_CC_CreateHandle failed: {:#x}", ret);
-    handle_ = nullptr;
-    return;
-  }
-
-  ret = MV_CC_OpenDevice(handle_);
-  if (ret != MV_OK) 
-  {
-    tools::logger()->warn("MV_CC_OpenDevice failed: {:#x}", ret);
-    MV_CC_DestroyHandle(handle_);
-    handle_ = nullptr;
-    return;
-  }
-
-  set_enum_value("BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_CONTINUOUS);
-  set_enum_value("ExposureAuto", MV_EXPOSURE_AUTO_MODE_OFF);
-  set_enum_value("GainAuto", MV_GAIN_MODE_OFF);
-  set_enum_value("TriggerMode", MV_TRIGGER_MODE_OFF);
-  set_float_value("ExposureTime", exposure_us_);
-  set_float_value("Gain", gain_);
-  MV_CC_SetFrameRate(handle_, 150);
-
-  ret = MV_CC_StartGrabbing(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_StartGrabbing failed: {:#x}", ret);
-    MV_CC_CloseDevice(handle_);
-    MV_CC_DestroyHandle(handle_);
-    handle_ = nullptr;
-    return;
-  }
-
-  capture_thread_ = std::thread{[this] 
-  {
-    tools::logger()->info("HikRobot's capture thread started.");
-
-    capturing_ = true;
-
-    MV_FRAME_OUT raw;
-    // MV_CC_PIXEL_CONVERT_PARAM cvt_param;
-
-    while (!capture_quit_) 
-    {
-      std::this_thread::sleep_for(1ms);
-
-      unsigned int ret;
-      unsigned int nMsec = 1000;
-
-      ret = MV_CC_GetImageBuffer(handle_, &raw, nMsec);
-      if (ret != MV_OK) 
-      {
-        tools::logger()->warn("MV_CC_GetImageBuffer failed: {:#x}", ret);
-        break;
-      }
-
-      auto timestamp = std::chrono::steady_clock::now();
-      cv::Mat img(cv::Size(raw.stFrameInfo.nWidth, raw.stFrameInfo.nHeight), CV_8U, raw.pBufAddr);
-
-      // cvt_param.nWidth = raw.stFrameInfo.nWidth;
-      // cvt_param.nHeight = raw.stFrameInfo.nHeight;
-
-      // cvt_param.pSrcData = raw.pBufAddr;
-      // cvt_param.nSrcDataLen = raw.stFrameInfo.nFrameLen;
-      // cvt_param.enSrcPixelType = raw.stFrameInfo.enPixelType;
-
-      // cvt_param.pDstBuffer = img.data;
-      // cvt_param.nDstBufferSize = img.total() * img.elemSize();
-      // cvt_param.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
-
-      // ret = MV_CC_ConvertPixelType(handle_, &cvt_param);
-      const auto & frame_info = raw.stFrameInfo;
-      auto pixel_type = frame_info.enPixelType;
-      cv::Mat dst_image;
-      const static std::unordered_map<MvGvspPixelType, cv::ColorConversionCodes> type_map = {
-        {PixelType_Gvsp_BayerGR8, cv::COLOR_BayerGR2RGB},
-        {PixelType_Gvsp_BayerRG8, cv::COLOR_BayerRG2RGB},
-        {PixelType_Gvsp_BayerGB8, cv::COLOR_BayerGB2RGB},
-        {PixelType_Gvsp_BayerBG8, cv::COLOR_BayerBG2RGB}};
-      cv::cvtColor(img, dst_image, type_map.at(pixel_type));
-      img = dst_image;
-
-      queue_.push({img, timestamp});
-
-      ret = MV_CC_FreeImageBuffer(handle_, &raw);
-      if (ret != MV_OK) {
-        tools::logger()->warn("MV_CC_FreeImageBuffer failed: {:#x}", ret);
-        break;
-      }
-    }
-
-    capturing_ = false;
-    tools::logger()->info("HikRobot's capture thread stopped.");
-  }};
-}
-
-void HikRobot::capture_stop()
-{
-  capture_quit_ = true;
-  if (capture_thread_.joinable()) capture_thread_.join();
-
-  // 如果 handle_ 无效，直接返回
-  if (handle_ == nullptr) {
-    return;
-  }
-
-  unsigned int ret;
-
-  ret = MV_CC_StopGrabbing(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_StopGrabbing failed: {:#x}", ret);
-    // 即使失败也继续清理
-  }
-
-  ret = MV_CC_CloseDevice(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_CloseDevice failed: {:#x}", ret);
-    // 即使失败也继续清理
-  }
-
-  ret = MV_CC_DestroyHandle(handle_);
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_DestroyHandle failed: {:#x}", ret);
-  }
-
-  handle_ = nullptr;
-}
-
-void HikRobot::set_float_value(const std::string & name, double value)
-{
-  unsigned int ret;
-
-  ret = MV_CC_SetFloatValue(handle_, name.c_str(), value);
-
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_SetFloatValue(\"{}\", {}) failed: {:#x}", name, value, ret);
-    return;
-  }
-}
-
-void HikRobot::set_enum_value(const std::string & name, unsigned int value)
-{
-  unsigned int ret;
-
-  ret = MV_CC_SetEnumValue(handle_, name.c_str(), value);
-
-  if (ret != MV_OK) {
-    tools::logger()->warn("MV_CC_SetEnumValue(\"{}\", {}) failed: {:#x}", name, value, ret);
-    return;
-  }
-}
-
-void HikRobot::set_vid_pid(const std::string & vid_pid)
-{
-  auto index = vid_pid.find(':');
-  if (index == std::string::npos) {
-    tools::logger()->warn("Invalid vid_pid: \"{}\"", vid_pid);
-    return;
-  }
-
-  auto vid_str = vid_pid.substr(0, index);
-  auto pid_str = vid_pid.substr(index + 1);
-
-  try {
-    vid_ = std::stoi(vid_str, 0, 16);
-    pid_ = std::stoi(pid_str, 0, 16);
-  } catch (const std::exception &) {
-    tools::logger()->warn("Invalid vid_pid: \"{}\"", vid_pid);
-  }
-}
-
+/**
+ * @brief 硬件重启 USB 端口
+ * 逻辑：针对工业相机在复杂干扰下锁死无法通过软件 Reset 的情况，
+ * 调用 libusb 模拟物理插拔动作。
+ */
 void HikRobot::reset_usb() const
 {
   if (vid_ == -1 || pid_ == -1) return;
-
-  // https://github.com/ralight/usb-reset/blob/master/usb-reset.c
   auto handle = libusb_open_device_with_vid_pid(NULL, vid_, pid_);
-  if (!handle) {
-    tools::logger()->warn("Unable to open usb!");
-    return;
-  }
-
+  if (!handle) return;
+  
   if (libusb_reset_device(handle))
-    tools::logger()->warn("Unable to reset usb!");
+    tools::logger()->warn("USB 硬件重置失败！");
   else
-    tools::logger()->info("Reset usb successfully :)");
+    tools::logger()->info("USB 端口重置成功。");
 
   libusb_close(handle);
 }

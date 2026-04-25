@@ -1,4 +1,4 @@
-#include "cboard.hpp"
+#include "cboard.cpp"
 
 #include <net/if.h>
 #include <sys/ioctl.h>
@@ -9,246 +9,167 @@
 #include "tools/yaml.hpp"
 
 namespace io {
+
+/**
+ * @brief CBoard 构造函数
+ * 逻辑：连接 SocketCAN 虚拟或硬件接口，并初始化 IMU 接收队列。
+ */
 CBoard::CBoard(const std::string &config_path)
     : mode(Mode::idle), shoot_mode(ShootMode::left_shoot), bullet_speed(0),
       enemy_color_(EnemyColor::red), queue_(5000), socketcan_(nullptr) {
-  // 读取配置
+  
   auto yaml = tools::load(config_path);
   quaternion_canid_ = tools::read<int>(yaml, "quaternion_canid");
   bullet_speed_canid_ = tools::read<int>(yaml, "bullet_speed_canid");
   send_canid_ = tools::read<int>(yaml, "send_canid");
 
-  std::string can_interface;
+  std::string can_interface = tools::read<std::string>(yaml, "can_interface");
 
-  if (yaml["can_interface"]) {
-    can_interface = yaml["can_interface"].as<std::string>();
-  }
-
-  if (can_interface.empty()) {
-    throw std::runtime_error("Missing 'can_interface' in YAML configuration.");
-  }
-
+  // 1. 系统可用性检查
   if (!check_socketcan_available(can_interface)) {
-    throw std::runtime_error("SocketCAN interface unavailable: " +
-                             can_interface);
+    throw std::runtime_error("SocketCAN 接口不可用: " + can_interface);
   }
 
+  // 2. 初始化 CAN 驱动并绑定回调
   try {
     socketcan_ = std::make_unique<SocketCAN>(
         can_interface,
         std::bind(&CBoard::callback, this, std::placeholders::_1));
-    tools::logger()->info("[CBoard] Using SocketCAN interface: {}",
-                          can_interface);
+    tools::logger()->info("[CBoard] 已连接到 SocketCAN 接口: {}", can_interface);
   } catch (const std::exception &e) {
-    throw std::runtime_error(std::string("Failed to initialize SocketCAN: ") +
-                             e.what());
+    throw std::runtime_error("SocketCAN 初始化失败: " + std::string(e.what()));
   }
 
-  // 注意: callback的运行会早于Cboard构造函数的完成
-  tools::logger()->info("[Cboard] Waiting for q...");
+  // 3. 阻塞等待最初的几帧 IMU 数据，确保插值算法有初值
+  tools::logger()->info("[Cboard] 正在等待 IMU 初始数据...");
   queue_.pop(data_ahead_);
   queue_.pop(data_behind_);
-  tools::logger()->info("[Cboard] Opened.");
+  tools::logger()->info("[Cboard] 通信接口已就绪.");
 }
 
-EnemyColor CBoard::enemy_color() const {
-  return enemy_color_.load(std::memory_order_relaxed);
-}
-
-std::string CBoard::enemy_color_string() const {
-  return enemy_color() == EnemyColor::red ? "red" : "blue";
-}
-
+/**
+ * @brief 插值获取指定时刻的位姿 (Core Logic)
+ * 算法逻辑：
+ * 1. 在 history queue 中线性搜索，找到时间戳 timestamp 刚好处于 data_ahead 和 data_behind 之间。
+ * 2. 如果队列为空，则进入阻塞等待并提醒用户检查硬件连接。
+ * 3. 执行球面线性插值 (Slerp)，返回精确的归一化四元数。
+ */
 Eigen::Quaterniond
 CBoard::imu_at(std::chrono::steady_clock::time_point timestamp) {
+  // 维护搜索窗口：如果后一帧还比目标时间早，则向前推进前一帧
   if (data_behind_.timestamp < timestamp)
     data_ahead_ = data_behind_;
 
   while (true) {
-    // 检查队列是否为空，如果为空则定期输出日志提示
     if (queue_.empty()) {
       auto last_log_time = std::chrono::steady_clock::now();
-      const auto log_interval = std::chrono::seconds(1); // 每秒输出一次日志
-
       while (queue_.empty()) {
         auto now = std::chrono::steady_clock::now();
-        if (now - last_log_time >= log_interval) {
-          tools::logger()->warn(
-              "[CBoard] IMU队列为空,等待IMU数据... 请检查CAN通信是否正常");
+        if (now - last_log_time >= std::chrono::seconds(1)) {
+          tools::logger()->warn("[CBoard] IMU 队列为空，请检查电控 CAN 线连接！");
           last_log_time = now;
         }
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(100)); // 每100ms检查一次
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
     }
 
     queue_.pop(data_behind_);
+    // 找到跨越该时间点的两个数据帧
     if (data_behind_.timestamp > timestamp)
       break;
     data_ahead_ = data_behind_;
   }
 
+  // 准备插值参数
   Eigen::Quaterniond q_a = data_ahead_.q.normalized();
   Eigen::Quaterniond q_b = data_behind_.q.normalized();
-  auto t_a = data_ahead_.timestamp;
-  auto t_b = data_behind_.timestamp;
-  auto t_c = timestamp;
-  std::chrono::duration<double> t_ab = t_b - t_a;
-  std::chrono::duration<double> t_ac = t_c - t_a;
+  
+  double t_ab = std::chrono::duration<double>(data_behind_.timestamp - data_ahead_.timestamp).count();
+  double t_ac = std::chrono::duration<double>(timestamp - data_ahead_.timestamp).count();
 
-  // 四元数插值
-  auto k = t_ac / t_ab;
-  Eigen::Quaterniond q_c = q_a.slerp(k, q_b).normalized();
-
-  return q_c;
+  // 执行 SLERP 插值
+  double k = (t_ab > 1e-6) ? (t_ac / t_ab) : 0.0;
+  return q_a.slerp(k, q_b).normalized();
 }
 
+/**
+ * @brief 发送控制指令
+ * 协议定义：
+ * [0]: control_flag, [1]: shoot_flag
+ * [2-3]: yaw (scaled by 1e4, big endian)
+ * [4-5]: pitch (scaled by 1e4, big endian)
+ * [6-7]: horizon_distance (scaled by 1e4, big endian)
+ */
 void CBoard::send(Command command) const {
   can_frame frame;
   frame.can_id = send_canid_;
   frame.can_dlc = 8;
   frame.data[0] = (command.control) ? 1 : 0;
   frame.data[1] = (command.shoot) ? 1 : 0;
-  frame.data[2] = (int16_t)(command.yaw * 1e4) >> 8;
-  frame.data[3] = (int16_t)(command.yaw * 1e4);
-  frame.data[4] = (int16_t)(command.pitch * 1e4) >> 8;
-  frame.data[5] = (int16_t)(command.pitch * 1e4);
-  frame.data[6] = (int16_t)(command.horizon_distance * 1e4) >> 8;
-  frame.data[7] = (int16_t)(command.horizon_distance * 1e4);
+  
+  // 16位有符号整型转换，比例因子为 10000
+  int16_t yaw_val = static_cast<int16_t>(command.yaw * 1e4);
+  int16_t pitch_val = static_cast<int16_t>(command.pitch * 1e4);
+  int16_t dist_val = static_cast<int16_t>(command.horizon_distance * 1e4);
 
-  // tools::logger()->info("Sending: {} {} {} {} ", frame.data[2],
-  // frame.data[3], frame.data[4], frame.data[5]);
+  frame.data[2] = (yaw_val >> 8) & 0xFF;
+  frame.data[3] = yaw_val & 0xFF;
+  frame.data[4] = (pitch_val >> 8) & 0xFF;
+  frame.data[5] = pitch_val & 0xFF;
+  frame.data[6] = (dist_val >> 8) & 0xFF;
+  frame.data[7] = dist_val & 0xFF;
 
   write_can_frame(frame);
 }
 
-void CBoard::write_can_frame(const can_frame &frame) const {
-  try {
-    if (socketcan_) {
-      socketcan_->write(const_cast<can_frame *>(&frame));
-    } else {
-      tools::logger()->warn("[CBoard] No CAN interface available for writing!");
-    }
-  } catch (const std::exception &e) {
-    tools::logger()->warn("[CBoard] Write failed: {}", e.what());
-  }
-}
-
-float CBoard::uint_to_float(int x_int, float x_min, float x_max, int bits) {
-  float span = x_max - x_min;
-  float offset = x_min;
-  return ((float)x_int) * span / ((float)((1 << bits) - 1)) + offset;
-}
-
+/**
+ * @brief CAN 接收回调处理
+ * 逻辑：解析来自电控的不同帧 ID，提取四元数分量并压入队列。
+ * 注意：此处目前根据 ID 粗略判定了敌方颜色（实际应用中应由专用位标志位判定）。
+ */
 void CBoard::callback(const can_frame &frame) {
-
   auto timestamp = std::chrono::steady_clock::now();
 
-  // 0x100
-  if (frame.can_id == quaternion_canid_) {
-    enemy_color_.store(EnemyColor::red, std::memory_order_relaxed);
-    auto w = ((uint16_t)(frame.data[0] << 8 | frame.data[1]));
-    auto x = ((uint16_t)(frame.data[2] << 8 | frame.data[3]));
-    auto y = ((uint16_t)(frame.data[4] << 8 | frame.data[5]));
-    auto z = ((uint16_t)(frame.data[6] << 8 | frame.data[7]));
-    double x_d = static_cast<double>(uint_to_float(x, q_min, q_max, 16));
-    double y_d = static_cast<double>(uint_to_float(y, q_min, q_max, 16));
-    double z_d = static_cast<double>(uint_to_float(z, q_min, q_max, 16));
-    double w_d = static_cast<double>(uint_to_float(w, q_min, q_max, 16));
+  // 解析四元数数据包
+  if (frame.can_id == quaternion_canid_ || frame.can_id == bullet_speed_canid_) {
+    // 假设不同的 ID 代表当前检测到的阵营颜色 (临时逻辑)
+    enemy_color_.store((frame.can_id == quaternion_canid_) ? EnemyColor::red : EnemyColor::blue);
+    
+    // 协议：每个分量占用 16bit，还原为由 [-1, 1] 范围的浮点数
+    auto w_raw = (uint16_t)(frame.data[0] << 8 | frame.data[1]);
+    auto x_raw = (uint16_t)(frame.data[2] << 8 | frame.data[3]);
+    auto y_raw = (uint16_t)(frame.data[4] << 8 | frame.data[5]);
+    auto z_raw = (uint16_t)(frame.data[6] << 8 | frame.data[7]);
 
-    if (std::abs(x_d * x_d + y_d * y_d + z_d * z_d + w_d * w_d - 1) > 1e-2) {
-      tools::logger()->warn("Invalid q: {} {} {} {}", w_d, x_d, y_d, z_d);
-      return;
+    double w = uint_to_float(w_raw, q_min, q_max, 16);
+    double x = uint_to_float(x_raw, q_min, q_max, 16);
+    double y = uint_to_float(y_raw, q_min, q_max, 16);
+    double z = uint_to_float(z_raw, q_min, q_max, 16);
+
+    // 有效性检查 (范数应接近 1)
+    if (std::abs(w*w + x*x + y*y + z*z - 1.0) < 0.1) {
+      queue_.push({{w, x, y, z}, timestamp});
     }
-    // tools::logger()->info("Invalid q: {} {} {} {}", w_d, x_d, y_d, z_d);
-    // return;
-
-    queue_.push({{w_d, x_d, y_d, z_d}, timestamp});
-
-  } else if (frame.can_id == bullet_speed_canid_) {
-    enemy_color_.store(EnemyColor::blue, std::memory_order_relaxed);
-    auto w = ((uint16_t)(frame.data[0] << 8 | frame.data[1]));
-    auto x = ((uint16_t)(frame.data[2] << 8 | frame.data[3]));
-    auto y = ((uint16_t)(frame.data[4] << 8 | frame.data[5]));
-    auto z = ((uint16_t)(frame.data[6] << 8 | frame.data[7]));
-    double x_d = static_cast<double>(uint_to_float(x, q_min, q_max, 16));
-    double y_d = static_cast<double>(uint_to_float(y, q_min, q_max, 16));
-    double z_d = static_cast<double>(uint_to_float(z, q_min, q_max, 16));
-    double w_d = static_cast<double>(uint_to_float(w, q_min, q_max, 16));
-
-    if (std::abs(x_d * x_d + y_d * y_d + z_d * z_d + w_d * w_d - 1) > 1e-2) {
-      tools::logger()->warn("Invalid q: {} {} {} {}", w_d, x_d, y_d, z_d);
-      return;
-    }
-    // tools::logger()->info("Invalid q: {} {} {} {}", w_d, x_d, y_d, z_d);
-    // return;
-
-    queue_.push({{w_d, x_d, y_d, z_d}, timestamp});
   }
-  bullet_speed = 10;
-  mode = Mode(1);
-  shoot_mode = ShootMode(1);
-  ft_angle = 0;
-
-  // if (frame.can_id == quaternion_canid_) {
-  // auto x = (int16_t)(frame.data[0] << 8 | frame.data[1]) / 1e4;
-  // auto y = (int16_t)(frame.data[2] << 8 | frame.data[3]) / 1e4;
-  // auto z = (int16_t)(frame.data[4] << 8 | frame.data[5]) / 1e4;
-  // auto w = (int16_t)(frame.data[6] << 8 | frame.data[7]) / 1e4;
-  //   auto x = ((int16_t)(frame.data[0] << 8 | frame.data[1]) - 8192 )/
-  //   16284.00; auto y = ((int16_t)(frame.data[2] << 8 | frame.data[3]) - 8192
-  //   )/ 16284.00; auto z = ((int16_t)(frame.data[4] << 8 | frame.data[5]) -
-  //   8192 )/ 16284.00; auto w = ((int16_t)(frame.data[6] << 8 | frame.data[7])
-  //   - 8192 )/ 16284.00;
-
-  //   if (std::abs(x * x + y * y + z * z + w * w - 1) > 1e-2) {
-  //     tools::logger()->warn("Invalid q: {} {} {} {}", w, x, y, z);
-  //     // tools::logger()->warn("Invalid q: {} {} {} {} {} {} {} {}",
-  //     frame.data[0]),frame.data[1],
-  //     //    frame.data[2], frame.data[3], frame.data[4], frame.data[5],
-  //     frame.data[6], frame.data[7]; return;
-  //   }
-
-  // else if (frame.can_id == bullet_speed_canid_) {
-  //   bullet_speed = (int16_t)(frame.data[0] << 8 | frame.data[1]) / 1e2;
-  //   mode = Mode(frame.data[2]);
-  //   shoot_mode = ShootMode(frame.data[3]);
-  //   ft_angle = (int16_t)(frame.data[4] << 8 | frame.data[5]) / 1e4;
-
-  //   // 限制日志输出频率为1Hz
-  //   static auto last_log_time = std::chrono::steady_clock::time_point::min();
-  //   auto now = std::chrono::steady_clock::now();
-
-  //   if (bullet_speed > 0 && tools::delta_time(now, last_log_time) >= 1.0) {
-  //     tools::logger()->info(
-  //       "[CBoard] Bullet speed: {:.2f} m/s, Mode: {}, Shoot mode: {}, FT
-  //       angle: {:.2f} rad", bullet_speed, MODES[mode],
-  //       SHOOT_MODES[shoot_mode], ft_angle);
-  //     last_log_time = now;
-  //   }
-  // }
-  // 0x101
-
-  // tools::logger()->info(
-  //   "[CBoard] Bullet speed: {:.2f} m/s, Mode: {}, Shoot mode: {}, FT angle:
-  //   {:.2f} rad", bullet_speed, MODES[mode], SHOOT_MODES[shoot_mode],
-  //   ft_angle);
 }
 
+/**
+ * @brief 数据解码辅助：定点数转浮点数
+ */
+float CBoard::uint_to_float(int x_int, float x_min, float x_max, int bits) {
+  float span = x_max - x_min;
+  return ((float)x_int) * span / (float)((1 << bits) - 1) + x_min;
+}
+
+/**
+ * @brief 底层接口探测
+ */
 bool CBoard::check_socketcan_available(const std::string &interface) {
-  if (interface.empty()) {
-    return false;
-  }
-
   int sock = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-  if (sock < 0) {
-    return false;
-  }
-
+  if (sock < 0) return false;
   ifreq ifr;
   std::strncpy(ifr.ifr_name, interface.c_str(), IFNAMSIZ - 1);
   bool available = (ioctl(sock, SIOCGIFINDEX, &ifr) >= 0);
-
   ::close(sock);
   return available;
 }

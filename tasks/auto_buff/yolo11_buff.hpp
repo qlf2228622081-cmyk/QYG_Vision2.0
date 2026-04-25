@@ -1,7 +1,7 @@
-﻿#ifndef AUTO_BUFF__YOLO11_BUFF_HPP
+#ifndef AUTO_BUFF__YOLO11_BUFF_HPP
 #define AUTO_BUFF__YOLO11_BUFF_HPP
-#include <yaml-cpp/yaml.h>
 
+#include <yaml-cpp/yaml.h>
 #include <filesystem>
 #include <opencv2/opencv.hpp>
 #include <openvino/openvino.hpp>
@@ -10,47 +10,70 @@
 
 namespace auto_buff
 {
+
+// 能量机关识别类别名称: 扇叶(buff), R标(r)
 const std::vector<std::string> class_names = {"buff", "r"};
 
+/**
+ * @brief YOLO11 能量机关专有检测器
+ * 逻辑：基于 OpenVINO 的 YOLO11 关键点回归模型，专用于检测能量机关的扇叶角点及旋转中心。
+ * 该模型通常输出矩形框、置信度以及 6 个关键点（4角点+中心+方向点）。
+ */
 class YOLO11_BUFF
 {
 public:
+  /**
+   * @brief 检测结果结构体
+   */
   struct Object
   {
-    cv::Rect_<float> rect;
-    int label;
-    float prob;
-    std::vector<cv::Point2f> kpt;
+    cv::Rect_<float> rect;        // 目标检测框
+    int label;                    // 类别索引
+    float prob;                   // 置信度
+    std::vector<cv::Point2f> kpt; // 关键点列表 (通常为 6 个)
   };
 
+  /**
+   * @brief 构造函数
+   * @param config 包含模型路径和基本参数的配置文件路径
+   */
   YOLO11_BUFF(const std::string & config);
 
-  // 使用NMS，用来获取多个框
+  /**
+   * @brief 获取所有符合条件的候选目标 (带 NMS)
+   * 适用于视野内有多个已激活扇叶的情况。
+   */
   std::vector<Object> get_multicandidateboxes(cv::Mat & image);
 
-  // 寻找置信度最高的框
+  /**
+   * @brief 获取置信度最高的一个候选目标
+   * 适用于快速锁定当前最显眼的扇叶。
+   */
   std::vector<Object> get_onecandidatebox(cv::Mat & image);
 
 private:
-  ov::Core core;  // 创建OpenVINO Runtime Core对象
+  ov::Core core;                // OpenVINO 运行时核心
   std::shared_ptr<ov::Model> model;
   ov::CompiledModel compiled_model;
   ov::InferRequest infer_request;
   ov::Tensor input_tensor;
-  const int NUM_POINTS = 6;
 
-  // 转换图像数据: 先转换元素类型, (可选)然后归一化到[0, 1], (可选)然后交换RB通道
+  const int NUM_POINTS = 6;     // 关键点数量 (4角点+中心+方向参考)
+
+  // 图像预处理与转换工具函数
   void convert(
     const cv::Mat & input, cv::Mat & output, const bool normalize, const bool exchangeRB) const;
 
-  // 对网络的输入为图片数据的节点进行赋值，实现图片数据输入网络,return 缩放因子, 该缩放是为了将input_image塞进input_tensor
+  /**
+   * @brief 填充输入张量
+   * 包含 Letterbox 变换逻辑，保持长宽比缩放。
+   */
   float fill_tensor_data_image(ov::Tensor & input_tensor, const cv::Mat & input_image) const;
 
-  // 打印模型信息, 这个函数修改自$${OPENVINO_COMMON}/utils/src/args_helper.cpp的同名函数
+  // 调试助手
   void printInputAndOutputsInfo(const ov::Model & network);
-
-  // 将image保存为"../result/$${programName}.jpg"
   void save(const std::string & programName, const cv::Mat & image);
 };
 }  // namespace auto_buff
+
 #endif
