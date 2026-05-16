@@ -180,12 +180,24 @@ void Target::update(const Armor &armor) {
 void Target::update_ypda(const Armor &armor, int id) {
   // 观测jacobi
   Eigen::MatrixXd H = h_jacobian(ekf_.x, id);
-  // Eigen::VectorXd R_dig{{4e-3, 4e-3, 1, 9e-2}};
+  auto prev_r = ekf_.x[8];
+  auto prev_l = ekf_.x[9];
+  auto prev_h = ekf_.x[10];
+
+  // 观测噪声建模（顺序：yaw, pitch, distance, angle）
+  // 快速横移时 angle 波动会增大；distance 不能长期被弱化，否则会通过拉大半径去拟合。
   auto center_yaw = std::atan2(armor.xyz_in_world[1], armor.xyz_in_world[0]);
   auto delta_angle = tools::limit_rad(armor.ypr_in_world[0] - center_yaw);
+  auto abs_delta_angle = std::abs(delta_angle);
+  auto distance = std::abs(armor.ypd_in_world[2]);
+
+  double yaw_var = 4e-4;
+  double pitch_var = 4e-4;
+  double distance_var = std::pow(0.02 + 0.01 * distance, 2);
+  double angle_var = std::pow(0.12 + 0.35 * abs_delta_angle, 2);
+
   Eigen::VectorXd R_dig{
-      {4e-4, 4e-4, log(std::abs(delta_angle) + 1) + 1,
-       log(std::abs(armor.ypd_in_world[2]) + 1) / 200 + 9e-2}};
+      {yaw_var, pitch_var, distance_var, angle_var}};
 
   // 测量过程噪声偏差的方差
   Eigen::MatrixXd R = R_dig.asDiagonal();
@@ -213,6 +225,33 @@ void Target::update_ypda(const Armor &armor, int id) {
   Eigen::VectorXd z{{ypd[0], ypd[1], ypd[2], ypr[0]}}; // 获得观测量
 
   ekf_.update(z, H, R, h, z_subtract);
+
+  // 动态正则化：
+  // 快速横移或装甲板切换时，仅允许 r/l/h 进行很小幅度变化，防止单帧观测把结构参数拉飞。
+  auto aggressive_motion = is_switch_ || abs_delta_angle > 0.45 || std::abs(ekf_.x[7]) > 1.2;
+  auto alpha = aggressive_motion ? 0.05 : 0.25;
+  ekf_.x[8] = prev_r + alpha * (ekf_.x[8] - prev_r);
+  ekf_.x[9] = prev_l + alpha * (ekf_.x[9] - prev_l);
+  ekf_.x[10] = prev_h + alpha * (ekf_.x[10] - prev_h);
+
+  // 物理范围约束，防止结构参数被异常观测拉飞
+  auto clamp = [](double v, double lo, double hi) {
+    return std::max(lo, std::min(v, hi));
+  };
+
+  if (name == ArmorName::outpost) {
+    ekf_.x[8] = clamp(ekf_.x[8], 0.20, 0.35);
+    ekf_.x[9] = clamp(ekf_.x[9], -0.05, 0.05);
+    ekf_.x[10] = clamp(ekf_.x[10], -0.05, 0.05);
+  } else if (name == ArmorName::base) {
+    ekf_.x[8] = clamp(ekf_.x[8], 0.24, 0.40);
+    ekf_.x[9] = clamp(ekf_.x[9], -0.06, 0.06);
+    ekf_.x[10] = clamp(ekf_.x[10], -0.06, 0.06);
+  } else {
+    ekf_.x[8] = clamp(ekf_.x[8], 0.12, 0.38);
+    ekf_.x[9] = clamp(ekf_.x[9], -0.12, 0.12);
+    ekf_.x[10] = clamp(ekf_.x[10], -0.20, 0.20);
+  }
 
 
 

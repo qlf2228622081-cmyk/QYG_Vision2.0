@@ -272,27 +272,18 @@ bool Tracker::update_target(std::list<Armor> & armors, std::chrono::steady_clock
 {
   target_.predict(t);
 
-  int found_count = 0;
-  double min_x = 1e10;  // 画面最左侧
-  for (const auto & armor : armors) {
-    if (armor.name != target_.name || armor.type != target_.armor_type) continue;
-    found_count++;
-    min_x = armor.center.x < min_x ? armor.center.x : min_x;
+  // 同一帧内只使用一个匹配装甲板进行更新，避免多次 update 累积导致结构参数漂移。
+  auto selected = armors.end();
+  for (auto it = armors.begin(); it != armors.end(); ++it) {
+    if (it->name == target_.name && it->type == target_.armor_type) {
+      selected = it;
+      break;
+    }
   }
+  if (selected == armors.end()) return false;
 
-  if (found_count == 0) return false;
-
-  for (auto & armor : armors) {
-    if (
-      armor.name != target_.name || armor.type != target_.armor_type
-      //  || armor.center.x != min_x
-    )
-      continue;
-
-    solver_.solve(armor);
-
-    target_.update(armor);
-  }
+  solver_.solve(*selected);
+  target_.update(*selected);
 
   return true;
 }
