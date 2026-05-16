@@ -1,7 +1,9 @@
 #include <fmt/core.h>
+#include <fmt/chrono.h>
 
 #include <Eigen/Geometry>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <opencv2/opencv.hpp>
 #include <string>
@@ -56,6 +58,20 @@ int main(int argc, char * argv[])
   // display 参数是“开关型”，只要出现即视为 true。
   auto display = cli.has("display");
   auto use_video_input = !video_path.empty();
+
+  // 为绘制后视频追加时间戳，避免多次运行覆盖同名文件。
+  // 例如：records/only_detect_debug.avi -> records/only_detect_debug_2026-05-16_13-20-00.avi
+  {
+    auto now_stamp = fmt::format("{:%Y-%m-%d_%H-%M-%S}", std::chrono::system_clock::now());
+    std::filesystem::path output_path_obj(output_path);
+    auto parent = output_path_obj.parent_path();
+    auto stem = output_path_obj.stem().string();
+    auto ext = output_path_obj.extension().string();
+    if (ext.empty()) ext = ".avi";
+    auto timestamp_name = fmt::format("{}_{}{}", stem, now_stamp, ext);
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+    output_path = parent.empty() ? timestamp_name : (parent / timestamp_name).string();
+  }
 
   // 3) 创建退出控制器与原始录制器。
   // Exiter 通常用于接收 Ctrl+C 等退出信号。
