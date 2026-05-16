@@ -10,13 +10,17 @@
 
 namespace tools
 {
-Recorder::Recorder(double fps) : init_(false), fps_(fps), queue_(1), stop_thread_(false)
+Recorder::Recorder(double fps, const std::string & name_suffix)
+: init_(false), fps_(fps), queue_(1), stop_thread_(false)
 {
   start_time_ = std::chrono::steady_clock::now();
   last_time_ = start_time_;
 
   auto folder_path = "records";
   auto file_name = fmt::format("{:%Y-%m-%d_%H-%M-%S}", std::chrono::system_clock::now());
+  if (!name_suffix.empty()) {
+    file_name = fmt::format("{}_{}", file_name, name_suffix);
+  }
   text_path_ = fmt::format("{}/{}.txt", folder_path, file_name);
   video_path_ = fmt::format("{}/{}.avi", folder_path, file_name);
 

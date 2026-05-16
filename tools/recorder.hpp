@@ -13,7 +13,7 @@ namespace tools
 class Recorder
 {
 public:
-  Recorder(double fps = 30);
+  Recorder(double fps = 30, const std::string & name_suffix = "");
   ~Recorder();
   void record(
     const cv::Mat & img, const Eigen::Quaterniond & q,
